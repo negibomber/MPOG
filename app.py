@@ -25,22 +25,23 @@ st.set_page_config(page_title=f"M-POG {SEASON_NAME}", layout="wide")
 # スタイル定義
 st.markdown("""
 <style>
-    .pog-table { width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px; margin-bottom: 20px; }
-    .pog-table th { background-color: #444; color: white; border: 1px solid #333; padding: 6px; text-align: center; }
-    .pog-table td { border: 1px solid #ddd; padding: 6px; text-align: center; white-space: nowrap; }
-    .section-label { font-weight: bold; margin: 15px 0 5px 0; color: #111; font-size: 1rem; border-left: 4px solid #444; padding-left: 8px; }
+    .pog-table { width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 14px; margin-bottom: 20px; }
+    .pog-table th { background-color: #444; color: white; border: 1px solid #333; padding: 8px; text-align: center; }
+    .pog-table td { border: 1px solid #ddd; padding: 8px; text-align: center; white-space: nowrap; }
+    .section-label { font-weight: bold; margin: 15px 0 5px 0; color: #111; font-size: 1.1rem; border-left: 5px solid #444; padding-left: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title(f"🏆 Mリーグ POG {SEASON_NAME}")
 
 # ==========================================
-# 2. データ取得（4人ずつの正確な分割）
+# 2. データ取得（空データをスキップする強化版）
 # ==========================================
 def filter_point(text):
-    clean_text = text.replace('▲', '-')
+    if not text or "--" in text: return None
+    clean_text = text.replace('▲', '-').replace(' ', '').replace('pts', '')
     found = re.findall(r'[0-9.\-]', clean_text)
-    return "".join(found)
+    return "".join(found) if found else None
 
 @st.cache_data(ttl=1800)
 def get_detailed_history():
@@ -51,21 +52,32 @@ def get_detailed_history():
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         match_containers = soup.find_all(class_="c-modal2")
+        
         for container in match_containers:
             m_id = container.get('id', '')
             date_match = re.search(r'(\d{8})', m_id)
             if not date_match: continue
             date_str = date_match.group(1)
-            names = [n.get_text(strip=True) for n in container.find_all(class_="p-gamesResult__name") if n.get_text(strip=True) != "選手名"]
-            points = [p.get_text(strip=True).split(' ')[0] for p in container.find_all(class_="p-gamesResult__point")]
+            
+            # 選手名とポイントを取得
+            names_raw = container.find_all(class_="p-gamesResult__name")
+            points_raw = container.find_all(class_="p-gamesResult__point")
+            
             valid_entries = []
-            for n, p in zip(names, points):
-                p_str = filter_point(p)
-                if p_str and n in PLAYER_TO_OWNER:
-                    valid_entries.append({"name": n, "point": float(p_str)})
+            for n_tag, p_tag in zip(names_raw, points_raw):
+                name = n_tag.get_text(strip=True)
+                if name == "選手名" or not name: continue
+                
+                p_str = filter_point(p_tag.get_text(strip=True))
+                # 数字が入っていないデータ（--など）は無視する
+                if p_str and name in PLAYER_TO_OWNER:
+                    valid_entries.append({"name": name, "point": float(p_str)})
+            
+            # 4人ずつ「試合」として分ける
             for i in range(0, len(valid_entries), 4):
                 match_players = valid_entries[i:i+4]
                 if len(match_players) < 4: continue
+                
                 match_index = (i // 4) + 1
                 match_uid = f"{date_str}_{m_id}_{match_index}"
                 for p_data in match_players:
@@ -82,12 +94,9 @@ def get_detailed_history():
 df_history = get_detailed_history()
 
 if df_history.empty:
-    st.info("データを読み込み中...")
+    st.warning("有効な対局データが見つかりません。シーズン開始前か、読み込みエラーの可能性があります。")
 else:
-    latest_date = df_history['date'].max()
-    display_date = datetime.strptime(latest_date, '%Y%m%d').strftime('%m/%d')
-    
-    # 集計
+    # 総合順位計算
     latest_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_list = [], []
     for owner, config in TEAM_CONFIG.items():
@@ -103,8 +112,9 @@ else:
     df_players = pd.DataFrame(player_list).sort_values("ポイント", ascending=False)
     df_players.insert(0, "Rank", range(1, len(df_players) + 1))
 
-    # --- レイアウト：順位と最新結果 ---
+    # --- レイアウト ---
     col_l, col_r = st.columns([1, 1.2])
+
     with col_l:
         st.subheader("🏆 総合順位")
         html = '<table class="pog-table"><tr><th>順位</th><th>オーナー</th><th>合計pt</th></tr>'
@@ -114,8 +124,11 @@ else:
         st.markdown(html + '</table>', unsafe_allow_html=True)
 
     with col_r:
-        st.subheader(f"⚾ 最新結果 ({display_date})")
+        latest_date = df_history['date'].max()
+        display_date = datetime.strptime(latest_date, '%Y%m%d').strftime('%m/%d')
+        st.subheader(f"🀄 最新結果 ({display_date})")
         df_latest = df_history[df_history['date'] == latest_date]
+        
         m_uids = df_latest['match_uid'].unique()
         for m_uid in m_uids:
             df_m = df_latest[df_latest['match_uid'] == m_uid].sort_values("point", ascending=False)
@@ -126,18 +139,8 @@ else:
                 html += f'<tr style="background-color:{bg}"><td>{row["player"]}</td><td>{row["owner"]}</td><td>{row["point"]:+.1f}</td></tr>'
             st.markdown(html + '</table>', unsafe_allow_html=True)
 
-    # --- グラフ：推移 ---
+    # --- グラフ・チーム別分析 ---
     st.write("---")
-    st.subheader("📈 ポイント推移")
-    daily_stats = df_history.groupby(['date', 'owner'])['point'].sum().reset_index()
-    df_pivot = daily_stats.pivot(index='date', columns='owner', values='point').fillna(0)
-    df_cumulative = pd.concat([pd.DataFrame([[0]*4], columns=df_pivot.columns, index=["20250915"]), df_pivot]).sort_index().cumsum().reset_index().rename(columns={'index': 'date'})
-    df_plot = df_cumulative.melt(id_vars='date', var_name='オーナー', value_name='累計pt')
-    df_plot['日付'] = pd.to_datetime(df_plot['date']).dt.strftime('%m/%d')
-    fig_line = px.line(df_plot, x='日付', y='累計pt', color='オーナー', color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
-    st.plotly_chart(fig_line, use_container_width=True)
-
-    # --- 棒グラフ：チーム別内訳 (復活！) ---
     st.subheader("📊 チーム別・個人貢献度")
     rows = [list(TEAM_CONFIG.keys())[:2], list(TEAM_CONFIG.keys())[2:]]
     for row_owners in rows:
@@ -149,7 +152,7 @@ else:
                 fig_sub.update_layout(plot_bgcolor='rgba(0,0,0,0)', height=300, margin=dict(l=0,r=20,t=40,b=0), yaxis_title="")
                 st.plotly_chart(fig_sub, use_container_width=True)
 
-    # --- ランキング：個人 ---
+    # --- 個人ランキング ---
     st.subheader("👤 個人成績ランキング")
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for _, row in df_players.iterrows():
