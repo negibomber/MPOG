@@ -20,21 +20,21 @@ PLAYER_TO_OWNER = {p: owner for owner, config in TEAM_CONFIG.items() for p in co
 
 st.set_page_config(page_title=f"M-POG {SEASON_NAME}", layout="wide")
 
-# スタイル：スマホのダークモードに負けない設定
+# スタイル：スマホのダークモードでも強制的に白背景・黒文字にする設定
 st.markdown("""
 <style>
     /* 全体背景と文字色の強制固定 */
     .stApp { background-color: white !important; color: black !important; }
-    h1, h2, h3, h4, span, p { color: black !important; }
+    h1, h2, h3, h4, span, p, div { color: black !important; }
 
-    .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #eee; }
+    .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #eee; background-color: white !important; }
     .pog-table th { background-color: #f0f2f6 !important; color: #31333F !important; border: 1px solid #ddd; padding: 10px; font-size: 0.8rem; }
     .pog-table td { background-color: white !important; color: black !important; border: 1px solid #eee; padding: 12px 8px; text-align: center; font-size: 0.9rem; font-weight: 500; }
     
     /* チームカラーを示す左側の太線 */
-    .team-line { border-left: 10px solid !important; padding-left: 10px !important; text-align: left !important; }
+    .team-line { border-left: 10px solid !important; padding-left: 10px !important; text-align: left !important; color: black !important; }
     
-    .section-label { font-weight: bold; margin: 20px 0 10px 0; font-size: 1.2rem; color: #1f77b4; border-bottom: 2px solid #1f77b4; }
+    .section-label { font-weight: bold; margin: 20px 0 10px 0; font-size: 1.2rem; color: #1f77b4 !important; border-bottom: 2px solid #1f77b4; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -123,7 +123,7 @@ else:
             st.markdown(html + '</table>', unsafe_allow_html=True)
 
     st.write("---")
-    st.markdown('<div class="section-label">📊 個人ランキング</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for i, row in enumerate(df_players.itertuples(), 1):
         color = TEAM_CONFIG[row.オーナー]['color']
@@ -131,7 +131,7 @@ else:
     st.markdown(html + '</table>', unsafe_allow_html=True)
 
 with st.sidebar:
-    # ここを「データを強制更新」に統一しました
+    # 確実に「データを強制更新」という名前にしました
     if st.button('🔄 データを強制更新', use_container_width=True):
         st.cache_data.clear()
         st.rerun()
