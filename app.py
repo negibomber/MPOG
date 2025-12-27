@@ -11,30 +11,22 @@ from datetime import datetime
 # ==========================================
 SEASON_NAME = "2025-26"
 TEAM_CONFIG = {
-    "どら": {"color": "#FF4B4B", "players": ["瑞原明奈", "竹内元太", "石井一馬", "内川幸太郎", "多井隆晴", "日向藍子", "鈴木たろう", "HIRO柴田", "滝沢和典", "東城りお"]},
-    "よしたに": {"color": "#00CC96", "players": ["堀慎吾", "鈴木優", "渡辺太", "下石戟", "松本吉弘", "小林剛", "醍醐大", "阿久津翔太", "浅見真紀", "三浦智博"]},
-    "ねぎし": {"color": "#636EFA", "players": ["仲林圭", "白鳥翔", "園田賢", "佐々木寿人", "伊達朱里紗", "勝又健志", "渋川難波", "本田朋広", "浅井堂岐", "瀬戸熊直樹"]},
-    "ひかえ": {"color": "#AB63FA", "players": ["二階堂亜樹", "逢川恵夢", "黒沢咲", "鈴木大介", "高宮まり", "岡田紗佳", "萩原聖人", "茅森早香", "永井孝典", "中田花奈"]}
+    "どら": {"color": "#ffadad", "bg_color": "#fff2f2", "players": ["瑞原明奈", "竹内元太", "石井一馬", "内川幸太郎", "多井隆晴", "日向藍子", "鈴木たろう", "HIRO柴田", "滝沢和典", "東城りお"]},
+    "よしたに": {"color": "#caffbf", "bg_color": "#f6fff5", "players": ["堀慎吾", "鈴木優", "渡辺太", "下石戟", "松本吉弘", "小林剛", "醍醐大", "阿久津翔太", "浅見真紀", "三浦智博"]},
+    "ねぎし": {"color": "#a0c4ff", "bg_color": "#f2f7ff", "players": ["仲林圭", "白鳥翔", "園田賢", "佐々木寿人", "伊達朱里紗", "勝又健志", "渋川難波", "本田朋広", "浅井堂岐", "瀬戸熊直樹"]},
+    "ひかえ": {"color": "#d3d3d3", "bg_color": "#f9f9f9", "players": ["二階堂亜樹", "逢川恵夢", "黒沢咲", "鈴木大介", "高宮まり", "岡田紗佳", "萩原聖人", "茅森早香", "永井孝典", "中田花奈"]}
 }
 PLAYER_TO_OWNER = {p: owner for owner, config in TEAM_CONFIG.items() for p in config['players']}
 
 st.set_page_config(page_title=f"M-POG {SEASON_NAME}", layout="wide")
 
-# スタイル：スマホのダークモードでも強制的に白背景・黒文字にする設定
+# スタイル設定
 st.markdown("""
 <style>
-    /* 全体背景と文字色の強制固定 */
-    .stApp { background-color: white !important; color: black !important; }
-    h1, h2, h3, h4, span, p, div { color: black !important; }
-
-    .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #eee; background-color: white !important; }
-    .pog-table th { background-color: #f0f2f6 !important; color: #31333F !important; border: 1px solid #ddd; padding: 10px; font-size: 0.8rem; }
-    .pog-table td { background-color: white !important; color: black !important; border: 1px solid #eee; padding: 12px 8px; text-align: center; font-size: 0.9rem; font-weight: 500; }
-    
-    /* チームカラーを示す左側の太線 */
-    .team-line { border-left: 10px solid !important; padding-left: 10px !important; text-align: left !important; color: black !important; }
-    
-    .section-label { font-weight: bold; margin: 20px 0 10px 0; font-size: 1.2rem; color: #1f77b4 !important; border-bottom: 2px solid #1f77b4; }
+    .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; color: black !important; }
+    .pog-table th { background-color: #444 !important; color: white !important; padding: 10px; border: 1px solid #333; }
+    .pog-table td { border: 1px solid #ddd; padding: 10px; text-align: center; color: black !important; font-weight: 500; }
+    .section-label { font-weight: bold; margin: 20px 0 10px 0; font-size: 1.2rem; border-left: 6px solid #444; padding-left: 10px; color: black !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,7 +77,7 @@ def get_detailed_history():
 df_history = get_detailed_history()
 
 if df_history.empty:
-    st.warning("データがありません。サイドバーの「データを強制更新」を押してください。")
+    st.warning("データが見つかりません。サイドバーの「データを強制更新」を押してください。")
 else:
     # 集計
     total_pts = df_history.groupby('player')['point'].sum()
@@ -105,8 +97,8 @@ else:
         st.markdown('<div class="section-label">🏆 総合順位</div>', unsafe_allow_html=True)
         html = '<table class="pog-table"><tr><th>順位</th><th>オーナー</th><th>合計</th></tr>'
         for i, row in enumerate(df_teams.itertuples(), 1):
-            color = TEAM_CONFIG[row.オーナー]['color']
-            html += f'<tr><td>{i}</td><td class="team-line" style="border-left-color:{color} !important">{row.オーナー}</td><td>{row.合計:+.1f}</td></tr>'
+            bg = TEAM_CONFIG[row.オーナー]['bg_color']
+            html += f'<tr style="background-color:{bg} !important"><td>{i}</td><td>{row.オーナー}</td><td>{row.合計:+.1f}</td></tr>'
         st.markdown(html + '</table>', unsafe_allow_html=True)
 
     with col2:
@@ -118,20 +110,36 @@ else:
             st.write(f"**{df_m['m_label'].iloc[0]}**")
             html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
             for row in df_m.itertuples():
-                color = TEAM_CONFIG[row.owner]['color']
-                html += f'<tr><td>{row.player}</td><td class="team-line" style="border-left-color:{color} !important">{row.owner}</td><td>{row.point:+.1f}</td></tr>'
+                bg = TEAM_CONFIG[row.owner]['bg_color']
+                html += f'<tr style="background-color:{bg} !important"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
             st.markdown(html + '</table>', unsafe_allow_html=True)
 
     st.write("---")
+    st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
+    daily = df_history.groupby(['date', 'owner'])['point'].sum().unstack().fillna(0).cumsum().reset_index()
+    daily['date'] = pd.to_datetime(daily['date']).dt.strftime('%m/%d')
+    df_plot = daily.melt(id_vars='date', var_name='オーナー', value_name='累計pt')
+    fig_line = px.line(df_plot, x='date', y='累計pt', color='オーナー', color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
+    st.plotly_chart(fig_line, use_container_width=True)
+
+    st.markdown('<div class="section-label">📊 チーム別内訳</div>', unsafe_allow_html=True)
+    row_owners = [list(TEAM_CONFIG.keys())[:2], list(TEAM_CONFIG.keys())[2:]]
+    for group in row_owners:
+        c1, c2 = st.columns(2)
+        for i, name in enumerate(group):
+            with [c1, c2][i]:
+                df_sub = df_players[df_players["オーナー"] == name].sort_values("ポイント", ascending=True)
+                fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
     st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for i, row in enumerate(df_players.itertuples(), 1):
-        color = TEAM_CONFIG[row.オーナー]['color']
-        html += f'<tr><td>{i}</td><td>{row.選手}</td><td class="team-line" style="border-left-color:{color} !important">{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
+        bg = TEAM_CONFIG[row.オーナー]['bg_color']
+        html += f'<tr style="background-color:{bg} !important"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
     st.markdown(html + '</table>', unsafe_allow_html=True)
 
 with st.sidebar:
-    # 確実に「データを強制更新」という名前にしました
     if st.button('🔄 データを強制更新', use_container_width=True):
         st.cache_data.clear()
         st.rerun()
