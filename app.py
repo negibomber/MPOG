@@ -23,16 +23,16 @@ def load_config():
 
 ARCHIVE_CONFIG = load_config()
 if not ARCHIVE_CONFIG:
-    st.error("設定ファイル draft_configs.json が見つかりません。")
+    st.error("設定ファイル draft_configs.json が見見つかりません。")
     st.stop()
 
-# 年度リストを降順（新しい順）に並べる
+# 年度リストを新しい順に並べる
 seasons = sorted(list(ARCHIVE_CONFIG.keys()), reverse=True)
 
-# サイドバーで年度を選択（デフォルトは一番新しい年度）
+# サイドバーで年度を選択
 selected_season = st.sidebar.selectbox("表示するシーズンを選択", seasons, index=0)
 
-# 選択された年度の設定をセット
+# 選択された年度の設定
 conf = ARCHIVE_CONFIG[selected_season]
 SEASON_START = str(conf["start_date"])
 SEASON_END = str(conf["end_date"])
@@ -56,6 +56,7 @@ st.title(f"🀄 M-POG {selected_season}")
 # ==========================================
 
 def load_history_from_csv(file_path):
+    """エクセル形式のCSVを解析して縦持ちデータに変換"""
     if not os.path.exists(file_path): return pd.DataFrame()
     try:
         raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
@@ -98,6 +99,7 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
+    """公式サイトから最新データをスクレイピング"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
@@ -108,7 +110,6 @@ def get_web_history(season_start, season_end):
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
-            # JSONに書いてある期間内だけを抽出
             if not (season_start <= date_str <= season_end): continue
             
             names = container.find_all(class_="p-gamesResult__name")
@@ -132,21 +133,22 @@ def get_web_history(season_start, season_end):
         return pd.DataFrame(history)
     except: return pd.DataFrame()
 
-# --- データの取得 ---
+# --- データの取得実行 ---
 csv_file = f"history_{selected_season}.csv"
 if os.path.exists(csv_file):
     df_history = load_history_from_csv(csv_file)
+    data_source = "csv"
 else:
-    # CSVがなければ、JSONに記載の期間でWebから取得
     df_history = get_web_history(SEASON_START, SEASON_END)
+    data_source = "web"
 
 # ==========================================
-# 4. 画面表示 (集計・グラフ・表)
+# 4. メイン画面表示
 # ==========================================
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
 else:
-    # (中略: 集計、グラフ、順位表の表示部分は前のコードと同じです)
+    # --- 集計 ---
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
@@ -158,6 +160,7 @@ else:
     df_teams = pd.DataFrame(pog_summary).sort_values("合計", ascending=False)
     df_players = pd.DataFrame(player_all).sort_values("ポイント", ascending=False)
 
+    # 総合順位と最新結果
     col1, col2 = st.columns([1, 1.2])
     with col1:
         st.markdown('<div class="section-label">🏆 総合順位</div>', unsafe_allow_html=True)
@@ -180,6 +183,7 @@ else:
                 html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
             st.markdown(html + '</table>', unsafe_allow_html=True)
 
+    # グラフ
     st.write("---")
     st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
     daily = df_history.groupby(['date', 'owner'])['point'].sum().unstack().fillna(0).cumsum().reset_index()
@@ -189,6 +193,7 @@ else:
                       color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
     st.plotly_chart(fig_line, use_container_width=True)
 
+    # チーム別
     st.markdown('<div class="section-label">📊 チーム別内訳</div>', unsafe_allow_html=True)
     owners_list = list(TEAM_CONFIG.keys())
     for i in range(0, len(owners_list), 2):
@@ -201,6 +206,7 @@ else:
                     fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
                     st.plotly_chart(fig_bar, use_container_width=True)
 
+    # ランキング
     st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for i, row in enumerate(df_players.itertuples(), 1):
@@ -208,22 +214,29 @@ else:
         html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
     st.markdown(html + '</table>', unsafe_allow_html=True)
 
-# --- 5. 管理機能 ---
+# ==========================================
+# 5. 管理機能 (サイドバー)
+# ==========================================
 with st.sidebar:
     st.markdown("---")
-    st.subheader("データ管理")
-    if st.button('🔄 データを更新'):
+    st.subheader("⚙️ データ管理")
+    
+    if st.button('🔄 最新データに更新'):
         st.cache_data.clear()
         st.rerun()
 
-    if not os.path.exists(csv_file) and not df_history.empty:
-        st.info("現在のWebデータをCSVで保存できます。")
+    if data_source == "csv":
+        st.success(f"✅ {selected_season} の保存済みデータ(CSV)を表示中")
+    elif not df_history.empty:
+        st.warning(f"🌐 公式サイトの最新データを表示中")
+        
+        # 保存用CSV(マトリックス形式)の作成
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
         output_csv = ",".join(dates_row) + "\n" + ",".join(match_row) + "\n"
-        all_players_in_season = sorted(list(PLAYER_TO_OWNER.keys()))
-        for p in all_players_in_season:
+        all_players_sorted = sorted(list(PLAYER_TO_OWNER.keys()))
+        for p in all_players_sorted:
             row_vals = [p]
             for col in pivot_df.columns:
                 val = pivot_df.loc[p, col] if p in pivot_df.index else ""
@@ -231,7 +244,7 @@ with st.sidebar:
             output_csv += ",".join(row_vals) + "\n"
         
         st.download_button(
-            label="💾 現在のデータをCSVで保存",
+            label="💾 現在の結果をCSVで保存",
             data=output_csv.encode('cp932'),
             file_name=csv_file,
             mime="text/csv",
