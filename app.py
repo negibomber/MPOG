@@ -6,6 +6,7 @@ import re
 import plotly.express as px
 import json
 import os
+import datetime
 
 # --- 1. ページ基本設定 ---
 st.set_page_config(page_title="M-POG Archives", layout="wide")
@@ -23,7 +24,7 @@ def load_config():
 
 ARCHIVE_CONFIG = load_config()
 if not ARCHIVE_CONFIG:
-    st.error("設定ファイル draft_configs.json が見見つかりません。")
+    st.error("設定ファイル draft_configs.json が見つかりません。")
     st.stop()
 
 # 年度リストを新しい順に並べる
@@ -38,6 +39,9 @@ SEASON_START = str(conf["start_date"])
 SEASON_END = str(conf["end_date"])
 TEAM_CONFIG = conf["teams"]
 PLAYER_TO_OWNER = {p: owner for owner, c in TEAM_CONFIG.items() for p in c['players']}
+
+# 今日の日付
+today_str = datetime.datetime.now().strftime('%Y%m%d')
 
 # --- スタイル設定 (CSS) ---
 st.markdown("""
@@ -56,7 +60,6 @@ st.title(f"🀄 M-POG {selected_season}")
 # ==========================================
 
 def load_history_from_csv(file_path):
-    """エクセル形式のCSVを解析して縦持ちデータに変換"""
     if not os.path.exists(file_path): return pd.DataFrame()
     try:
         raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
@@ -99,7 +102,6 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """公式サイトから最新データをスクレイピング"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
@@ -148,7 +150,6 @@ else:
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
 else:
-    # --- 集計 ---
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
@@ -160,7 +161,6 @@ else:
     df_teams = pd.DataFrame(pog_summary).sort_values("合計", ascending=False)
     df_players = pd.DataFrame(player_all).sort_values("ポイント", ascending=False)
 
-    # 総合順位と最新結果
     col1, col2 = st.columns([1, 1.2])
     with col1:
         st.markdown('<div class="section-label">🏆 総合順位</div>', unsafe_allow_html=True)
@@ -183,7 +183,6 @@ else:
                 html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
             st.markdown(html + '</table>', unsafe_allow_html=True)
 
-    # グラフ
     st.write("---")
     st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
     daily = df_history.groupby(['date', 'owner'])['point'].sum().unstack().fillna(0).cumsum().reset_index()
@@ -193,7 +192,6 @@ else:
                       color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
     st.plotly_chart(fig_line, use_container_width=True)
 
-    # チーム別
     st.markdown('<div class="section-label">📊 チーム別内訳</div>', unsafe_allow_html=True)
     owners_list = list(TEAM_CONFIG.keys())
     for i in range(0, len(owners_list), 2):
@@ -206,7 +204,6 @@ else:
                     fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # ランキング
     st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for i, row in enumerate(df_players.itertuples(), 1):
@@ -218,7 +215,16 @@ else:
 # 5. 管理機能 (サイドバー)
 # ==========================================
 with st.sidebar:
-    st.markdown("---")
+    # --- 保存し忘れ防止アラート ---
+    if (not os.path.exists(csv_file)) and (today_str > SEASON_END):
+        st.error(f"""
+        ### 🚨 保存の警告
+        {selected_season} シーズンの終了予定日（{SEASON_END}）を過ぎていますが、まだデータがCSVとして保存されていません。
+        
+        下のボタンから**至急保存**してください。
+        """)
+        st.markdown("---")
+
     st.subheader("⚙️ データ管理")
     
     if st.button('🔄 最新データに更新'):
@@ -230,7 +236,6 @@ with st.sidebar:
     elif not df_history.empty:
         st.warning(f"🌐 公式サイトの最新データを表示中")
         
-        # 保存用CSV(マトリックス形式)の作成
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
