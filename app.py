@@ -1,218 +1,70 @@
-import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import re
-import plotly.express as px
-import json
-import os
-
-# --- ページ設定 ---
-st.set_page_config(page_title="M-POG Archives", layout="wide")
-
-# ==========================================
-# 1. 外部設定ファイルの読み込み
-# ==========================================
-CONFIG_FILE = "draft_configs.json"
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-ARCHIVE_CONFIG = load_config()
-if not ARCHIVE_CONFIG:
-    st.error("設定ファイルが見つかりません。")
-    st.stop()
-
-selected_season = st.sidebar.selectbox("表示するシーズンを選択", list(ARCHIVE_CONFIG.keys()), index=0)
-
-conf = ARCHIVE_CONFIG[selected_season]
-SEASON_START = conf["start_date"]
-SEASON_END = conf["end_date"]
-TEAM_CONFIG = conf["teams"]
-PLAYER_TO_OWNER = {p: owner for owner, c in TEAM_CONFIG.items() for p in c['players']}
-
-# --- スタイル設定 ---
-st.markdown("""
-<style>
-    .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-    .pog-table th { background-color: #444; color: white !important; padding: 10px; border: 1px solid #333; }
-    .pog-table td { border: 1px solid #ddd; padding: 10px; text-align: center; color: #000000 !important; font-weight: bold; }
-    .section-label { font-weight: bold; margin: 20px 0 10px 0; font-size: 1.2rem; border-left: 6px solid #444; padding-left: 10px; color: #333; }
-</style>
-""", unsafe_allow_html=True)
-
-st.title(f"🀄 M-POG {selected_season}")
-
-# ==========================================
-# 2. データ取得ロジック
-# ==========================================
-
-# --- A. エクセル(CSV)から過去データを読み込む関数 ---
 def load_history_from_csv(file_path):
     if not os.path.exists(file_path):
         return pd.DataFrame()
     
-    # エクセル書き出しのCSVは少し特殊なので調整して読み込み
-    raw_df = pd.read_csv(file_path, header=None)
+    try:
+        # encoding='cp932' は日本のExcel書き出しCSVで一般的な文字コードです
+        raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
+    except:
+        raw_df = pd.read_csv(file_path, header=None, encoding='utf-8')
     
-    # 1行目: 日付 (2列目以降) / 2行目: 試合番号 (1 or 2) / 1列目: 選手名 (3行目以降)
-    dates_row = raw_df.iloc[0].tolist()
-    match_nums = raw_df.iloc[1].tolist()
+    # データの位置を特定
+    # 1行目(index 0): 日付
+    # 2行目(index 1): 試合番号
+    # 3行目以降(index 2~): [選手名, スコア1, スコア2, ...]
+    
+    dates_row = raw_df.iloc[0].values
+    match_nums = raw_df.iloc[1].values
     
     history = []
-    # 3行目以降が各選手のデータ
+    
+    # 3行目（index 2）から最終行までループ
     for i in range(2, len(raw_df)):
         player_name = str(raw_df.iloc[i, 0]).strip()
-        if player_name not in PLAYER_TO_OWNER:
+        
+        # 名前が空、またはドラフト設定にいない選手はスキップ
+        if not player_name or player_name == "nan" or player_name not in PLAYER_TO_OWNER:
             continue
         
-        # 2列目以降のスコアをチェック
+        # 2列目（index 1）から最終列までスコアをチェック
         for col in range(1, len(raw_df.columns)):
             val = raw_df.iloc[i, col]
-            if pd.isna(val) or val == "":
+            
+            # 数字（スコア）が入っていないセルは飛ばす
+            if pd.isna(val) or str(val).strip() == "":
                 continue
             
-            # 日付の補完（結合セルのため、空なら左を見る）
-            d_val = dates_row[col]
-            if pd.isna(d_val) or d_val == "":
-                # 左の列を確認
-                for back in range(col, 0, -1):
-                    if not pd.isna(dates_row[back]) and dates_row[back] != "":
-                        d_val = dates_row[back]
-                        break
+            # 日付の補完（左側の列を探索）
+            d_val = None
+            for back in range(col, 0, -1):
+                temp_d = str(dates_row[back]).strip()
+                if temp_d != "" and temp_d != "nan":
+                    d_val = temp_d
+                    break
             
-            # 日付を yyyymmdd 形式に変換
+            if not d_val:
+                continue
+                
+            # 試合番号の取得
+            try:
+                m_idx = int(float(match_nums[col]))
+            except:
+                m_idx = 1 # 万が一取れなければ第1試合とする
+            
+            # 日付のパース (2024/9/16 等に対応)
             try:
                 dt = pd.to_datetime(d_val)
                 date_str = dt.strftime('%Y%m%d')
             except:
                 continue
                 
-            m_idx = match_nums[col]
             history.append({
                 "date": date_str,
-                "m_label": f"第{int(m_idx)}試合",
+                "m_label": f"第{m_idx}試合",
                 "match_uid": f"{date_str}_{m_idx}",
                 "player": player_name,
                 "point": float(val),
                 "owner": PLAYER_TO_OWNER[player_name]
             })
+            
     return pd.DataFrame(history)
-
-# --- B. 公式サイトから最新データを取得する関数 ---
-@st.cache_data(ttl=1800)
-def get_web_history(season_start, season_end):
-    url = "https://m-league.jp/games/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    history = []
-    try:
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for container in soup.find_all(class_="c-modal2"):
-            date_match = re.search(r'(\d{8})', container.get('id', ''))
-            if not date_match: continue
-            date_str = date_match.group(1)
-            if not (season_start <= date_str <= season_end): continue
-            
-            names = container.find_all(class_="p-gamesResult__name")
-            pts = container.find_all(class_="p-gamesResult__point")
-            valid = []
-            for n, p in zip(names, pts):
-                name = n.get_text(strip=True)
-                # ポイントのクレンジング
-                p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
-                if name in PLAYER_TO_OWNER and p_val:
-                    valid.append({"name": name, "point": float(p_val)})
-            
-            for i in range(0, len(valid), 4):
-                chunk = valid[i:i+4]
-                if len(chunk) < 4: continue
-                m_idx = (i // 4) + 1
-                for p_data in chunk:
-                    history.append({
-                        "date": date_str, "m_label": f"第{m_idx}試合", "match_uid": f"{date_str}_{m_idx}",
-                        "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
-                    })
-        return pd.DataFrame(history)
-    except: return pd.DataFrame()
-
-# --- データの切り替え ---
-csv_file = f"history_{selected_season}.csv"
-if os.path.exists(csv_file):
-    df_history = load_history_from_csv(csv_file)
-else:
-    df_history = get_web_history(SEASON_START, SEASON_END)
-
-# ==========================================
-# 3. 表示ロジック (以降は共通)
-# ==========================================
-if df_history.empty:
-    st.warning(f"{selected_season} のデータが見つかりません。")
-else:
-    # (中略: 以前のコードと同じ集計・グラフ表示ロジック)
-    total_pts = df_history.groupby('player')['point'].sum()
-    pog_summary, player_all = [], []
-    for owner, cfg in TEAM_CONFIG.items():
-        score = sum([total_pts.get(p, 0) for p in cfg['players']])
-        pog_summary.append({"オーナー": owner, "合計": round(score, 1)})
-        for p in cfg['players']:
-            player_all.append({"選手": p, "オーナー": owner, "ポイント": round(total_pts.get(p, 0), 1)})
-    
-    df_teams = pd.DataFrame(pog_summary).sort_values("合計", ascending=False)
-    df_players = pd.DataFrame(player_all).sort_values("ポイント", ascending=False)
-
-    col1, col2 = st.columns([1, 1.2])
-    with col1:
-        st.markdown('<div class="section-label">🏆 総合順位</div>', unsafe_allow_html=True)
-        html = '<table class="pog-table"><tr><th>順位</th><th>オーナー</th><th>合計</th></tr>'
-        for i, row in enumerate(df_teams.itertuples(), 1):
-            bg = TEAM_CONFIG[row.オーナー]['bg_color']
-            html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.オーナー}</td><td>{row.合計:+.1f}</td></tr>'
-        st.markdown(html + '</table>', unsafe_allow_html=True)
-
-    with col2:
-        latest_date = df_history['date'].max()
-        st.markdown(f'<div class="section-label">🀄 最新結果 ({latest_date[4:6]}/{latest_date[6:]})</div>', unsafe_allow_html=True)
-        df_latest = df_history[df_history['date'] == latest_date]
-        for m_uid in df_latest['match_uid'].unique():
-            df_m = df_latest[df_latest['match_uid'] == m_uid].sort_values("point", ascending=False)
-            st.write(f"**{df_m['m_label'].iloc[0]}**")
-            html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
-            for row in df_m.itertuples():
-                bg = TEAM_CONFIG[row.owner]['bg_color']
-                html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
-            st.markdown(html + '</table>', unsafe_allow_html=True)
-
-    st.write("---")
-    st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
-    daily = df_history.groupby(['date', 'owner'])['point'].sum().unstack().fillna(0).cumsum().reset_index()
-    daily['date'] = pd.to_datetime(daily['date']).dt.strftime('%m/%d')
-    df_plot = daily.melt(id_vars='date', var_name='オーナー', value_name='累計pt')
-    fig_line = px.line(df_plot, x='date', y='累計pt', color='オーナー', color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
-    st.plotly_chart(fig_line, use_container_width=True)
-
-    st.markdown('<div class="section-label">📊 チーム別内訳</div>', unsafe_allow_html=True)
-    row_owners = [list(TEAM_CONFIG.keys())[i:i+2] for i in range(0, len(TEAM_CONFIG), 2)]
-    for group in row_owners:
-        cols = st.columns(len(group))
-        for i, name in enumerate(group):
-            with cols[i]:
-                df_sub = df_players[df_players["オーナー"] == name].sort_values("ポイント", ascending=True)
-                fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-    st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
-    html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
-    for i, row in enumerate(df_players.itertuples(), 1):
-        bg = TEAM_CONFIG[row.オーナー]['bg_color']
-        html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
-    st.markdown(html + '</table>', unsafe_allow_html=True)
-
-with st.sidebar:
-    if st.button('🔄 更新'):
-        st.cache_data.clear()
-        st.rerun()
