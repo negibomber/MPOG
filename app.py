@@ -97,36 +97,47 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """公式サイトからスクレイピング"""
+    """公式サイトからスクレイピング（ズレ防止のテーブル特定版）"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
     try:
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 試合詳細のモーダルを取得
         for container in soup.find_all(class_="c-modal2"):
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
-            if not (season_start <= date_str <= season_end): continue
-            names = container.find_all(class_="p-gamesResult__name")
-            pts = container.find_all(class_="p-gamesResult__point")
-            valid = []
-            for n, p in zip(names, pts):
-                name = n.get_text(strip=True)
-                p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
-                if name in PLAYER_TO_OWNER and p_val:
-                    valid.append({"name": name, "point": float(p_val)})
-            for i in range(0, len(valid), 4):
-                chunk = valid[i:i+4]
-                if len(chunk) < 4: continue
-                m_idx = (i // 4) + 1
-                for p_data in chunk:
-                    history.append({
-                        "date": date_str, "m_label": f"第{m_idx}試合", "match_uid": f"{date_str}_{m_idx}",
-                        "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
-                    })
+            if not (str(season_start) <= date_str <= str(season_end)): continue
+            
+            # --- ここが修正ポイント ---
+            # 1モーダル内の「試合テーブル」を個別に取得することで4人1組を保証する
+            tables = container.find_all(class_="p-gamesResult__table")
+            for m_idx_0, table in enumerate(tables):
+                m_num = m_idx_0 + 1
+                
+                # テーブル内の「名前」と「点数」のペアだけを確実に拾う
+                rows = table.find_all("tr")
+                for row in rows:
+                    name_tag = row.find(class_="p-gamesResult__name")
+                    pt_tag = row.find(class_="p-gamesResult__point")
+                    
+                    if name_tag and pt_tag:
+                        name = name_tag.get_text(strip=True)
+                        p_raw = pt_tag.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
+                        p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
+                        
+                        if name in PLAYER_TO_OWNER and p_val:
+                            history.append({
+                                "date": date_str, 
+                                "m_label": f"第{m_num}試合", 
+                                "match_uid": f"{date_str}_{m_num}",
+                                "player": name, 
+                                "point": float(p_val), 
+                                "owner": PLAYER_TO_OWNER[name]
+                            })
         return pd.DataFrame(history)
     except: return pd.DataFrame()
 
@@ -213,7 +224,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # CSVが未作成で、Webから取得したデータがある場合のみダウンロードボタンを表示
     if not os.path.exists(csv_file) and not df_history.empty:
         st.info("現在のWebデータをエクセル形式のCSVで保存できます。")
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
