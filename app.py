@@ -63,16 +63,16 @@ def load_history_from_csv(file_path):
     history = []
     for i in range(2, len(raw_df)):
         player_name = str(raw_df.iloc[i, 0]).strip()
-        if not player_name or player_name == "nan" or player_name not in PLAYER_TO_OWNER: continue
+        if player_name not in PLAYER_TO_OWNER: continue
         for col in range(1, len(raw_df.columns)):
             val = raw_df.iloc[i, col]
             if pd.isna(val) or str(val).strip() == "": continue
             try: score = float(str(val).replace(' ', ''))
             except: continue
             d_val = dates_row[col]
-            if pd.isna(d_val) or str(d_val).strip() in ["", "nan"]:
+            if pd.isna(d_val) or str(d_val).strip() == "":
                 for back in range(col, 0, -1):
-                    if not pd.isna(dates_row[back]) and str(dates_row[back]).strip() not in ["", "nan"]:
+                    if not pd.isna(dates_row[back]) and str(dates_row[back]).strip() != "":
                         d_val = dates_row[back]
                         break
             if not d_val: continue
@@ -90,39 +90,60 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """【最新版】タグ構造に依存せず、テキスト中から選手名と数値を抽出する最強ロジック"""
+    """【究極版】ブラウザ偽装＋全テキストスキャン方式"""
     url = "https://m-league.jp/games/"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    # ブラウザからのアクセスを装うための詳細なヘッダー
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+        "Cache-Control": "max-age=0",
+    }
     history = []
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=15)
+        res.encoding = res.apparent_encoding # 文字化け対策
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # モーダル要素を全スキャン
-        for container in soup.find_all(id=re.compile(r'\d{8}')):
-            date_str = re.search(r'(\d{8})', container.get('id')).group(1)
+        # モーダル（試合詳細）の中身を全スキャン
+        containers = soup.find_all(id=re.compile(r'\d{8}'))
+        if not containers:
+            # ID形式が変わっている場合、すべてのdivをスキャン
+            containers = soup.find_all('div', class_=re.compile(r'modal|game'))
+
+        for container in containers:
+            cont_id = container.get('id', '')
+            date_match = re.search(r'(\d{8})', cont_id)
+            if not date_match: continue
+            date_str = date_match.group(1)
             if not (season_start <= date_str <= season_end): continue
             
-            # 選手名と点数のペアを抽出
-            items = container.find_all(class_=re.compile(r'name|point'))
-            temp_list = []
-            for item in items:
-                text = item.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                # 選手名か、数値（マイナス、小数点含む）か判定
-                if text in PLAYER_TO_OWNER:
-                    temp_list.append({"type": "name", "val": text})
+            # 1. ページ内の全テキストを取得し、選手名と数値をバラバラに抽出
+            # クラス名に依存せず、すべての「テキスト要素」から抽出
+            text_elements = container.find_all(text=True)
+            flat_data = []
+            for el in text_elements:
+                t = el.strip().replace('▲', '-').replace('pts', '').replace(' ', '')
+                if t in PLAYER_TO_OWNER:
+                    flat_data.append({"type": "name", "val": t})
                 else:
-                    score_match = re.findall(r'[0-9.\-]+', text)
-                    if score_match:
-                        temp_list.append({"type": "point", "val": float(score_match[0])})
+                    # 数値（マイナス、小数点含む）を抽出
+                    nums = re.findall(r'-?\d+\.?\d*', t)
+                    for n in nums:
+                        try:
+                            # 極端に大きい/小さい数値（持ち点など）を除外するため150以下に制限
+                            val = float(n)
+                            if -150.0 <= val <= 150.0:
+                                flat_data.append({"type": "point", "val": val})
+                        except: continue
             
-            # 名前→点数の順に並んでいるものを抽出
+            # 2. 選手名 -> 点数の順に並んでいるペアを特定
             valid_pairs = []
-            for i in range(len(temp_list)-1):
-                if temp_list[i]["type"] == "name" and temp_list[i+1]["type"] == "point":
-                    valid_pairs.append({"name": temp_list[i]["val"], "point": temp_list[i+1]["val"]})
+            for i in range(len(flat_data)-1):
+                if flat_data[i]["type"] == "name" and flat_data[i+1]["type"] == "point":
+                    valid_pairs.append({"name": flat_data[i]["val"], "point": flat_data[i+1]["val"]})
             
-            # 4人1組で試合として整理
+            # 3. 4人1組で試合として登録
             for j in range(0, len(valid_pairs), 4):
                 chunk = valid_pairs[j:j+4]
                 if len(chunk) < 4: continue
@@ -132,10 +153,13 @@ def get_web_history(season_start, season_end):
                         "date": date_str, "m_label": f"第{m_num}試合", "match_uid": f"{date_str}_{m_num}",
                         "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
                     })
+        
         return pd.DataFrame(history).drop_duplicates()
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"接続エラー: {e}")
+        return pd.DataFrame()
 
-# --- データの取得実行 ---
+# --- 実行部分は同じ ---
 csv_file = f"history_{selected_season}.csv"
 if os.path.exists(csv_file):
     df_history = load_history_from_csv(csv_file)
@@ -144,11 +168,10 @@ else:
     df_history = get_web_history(SEASON_START, SEASON_END)
     data_source = "web"
 
-# ==========================================
-# 4. メイン画面表示
-# ==========================================
+# --- 4. 表示部分は同じ ---
 if df_history.empty:
-    st.warning(f"{selected_season} のデータが見つかりません。")
+    st.warning(f"現在、{selected_season} のデータを公式サイトから取得できません。")
+    st.info("公式サイトがプログラムによるアクセスを制限している可能性があります。一度、サイドバーの「最新データに更新」を何度か押してみてください。")
 else:
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
@@ -211,9 +234,7 @@ else:
         html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
     st.markdown(html + '</table>', unsafe_allow_html=True)
 
-# ==========================================
-# 5. 管理機能
-# ==========================================
+# --- 5. 管理機能 ---
 with st.sidebar:
     if (not os.path.exists(csv_file)) and (today_str > SEASON_END):
         st.error(f"### 🚨 保存警告\n{selected_season} の終了日を過ぎていますがCSV未保存です。")
