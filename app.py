@@ -26,13 +26,16 @@ if not ARCHIVE_CONFIG:
     st.error("設定ファイル draft_configs.json が見つかりません。")
     st.stop()
 
-# サイドバーで年度を選択
-selected_season = st.sidebar.selectbox("表示するシーズンを選択", list(ARCHIVE_CONFIG.keys()), index=0)
+# 年度リストを降順（新しい順）に並べる
+seasons = sorted(list(ARCHIVE_CONFIG.keys()), reverse=True)
+
+# サイドバーで年度を選択（デフォルトは一番新しい年度）
+selected_season = st.sidebar.selectbox("表示するシーズンを選択", seasons, index=0)
 
 # 選択された年度の設定をセット
 conf = ARCHIVE_CONFIG[selected_season]
-SEASON_START = conf["start_date"]
-SEASON_END = conf["end_date"]
+SEASON_START = str(conf["start_date"])
+SEASON_END = str(conf["end_date"])
 TEAM_CONFIG = conf["teams"]
 PLAYER_TO_OWNER = {p: owner for owner, c in TEAM_CONFIG.items() for p in c['players']}
 
@@ -53,9 +56,7 @@ st.title(f"🀄 M-POG {selected_season}")
 # ==========================================
 
 def load_history_from_csv(file_path):
-    """エクセル形式のCSVを解析する"""
-    if not os.path.exists(file_path):
-        return pd.DataFrame()
+    if not os.path.exists(file_path): return pd.DataFrame()
     try:
         raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
     except:
@@ -97,7 +98,6 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """公式サイトからスクレイピング"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
@@ -108,7 +108,9 @@ def get_web_history(season_start, season_end):
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
+            # JSONに書いてある期間内だけを抽出
             if not (season_start <= date_str <= season_end): continue
+            
             names = container.find_all(class_="p-gamesResult__name")
             pts = container.find_all(class_="p-gamesResult__point")
             valid = []
@@ -130,20 +132,21 @@ def get_web_history(season_start, season_end):
         return pd.DataFrame(history)
     except: return pd.DataFrame()
 
-# --- データの取得実行 ---
+# --- データの取得 ---
 csv_file = f"history_{selected_season}.csv"
 if os.path.exists(csv_file):
     df_history = load_history_from_csv(csv_file)
 else:
+    # CSVがなければ、JSONに記載の期間でWebから取得
     df_history = get_web_history(SEASON_START, SEASON_END)
 
 # ==========================================
-# 4. 画面表示
+# 4. 画面表示 (集計・グラフ・表)
 # ==========================================
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
 else:
-    # --- 集計 ---
+    # (中略: 集計、グラフ、順位表の表示部分は前のコードと同じです)
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
@@ -205,7 +208,7 @@ else:
         html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
     st.markdown(html + '</table>', unsafe_allow_html=True)
 
-# --- 5. 管理機能（サイドバー） ---
+# --- 5. 管理機能 ---
 with st.sidebar:
     st.markdown("---")
     st.subheader("データ管理")
@@ -213,16 +216,12 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # CSVが未作成で、Webから取得したデータがある場合のみダウンロードボタンを表示
     if not os.path.exists(csv_file) and not df_history.empty:
-        st.info("現在のWebデータをエクセル形式のCSVで保存できます。")
+        st.info("現在のWebデータをCSVで保存できます。")
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
-        
-        output_csv = ",".join(dates_row) + "\n"
-        output_csv += ",".join(match_row) + "\n"
-        
+        output_csv = ",".join(dates_row) + "\n" + ",".join(match_row) + "\n"
         all_players_in_season = sorted(list(PLAYER_TO_OWNER.keys()))
         for p in all_players_in_season:
             row_vals = [p]
@@ -234,6 +233,6 @@ with st.sidebar:
         st.download_button(
             label="💾 現在のデータをCSVで保存",
             data=output_csv.encode('cp932'),
-            file_name=f"history_{selected_season}.csv",
+            file_name=csv_file,
             mime="text/csv",
         )
