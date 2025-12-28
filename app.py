@@ -102,38 +102,44 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
+    """【強化版】試合ブロックを特定して選手とスコアを正しく紐付け"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
     try:
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # モーダル（詳細画面）ごとに処理
         for container in soup.find_all(class_="c-modal2"):
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
             if not (season_start <= date_str <= season_end): continue
             
-            names = container.find_all(class_="p-gamesResult__name")
-            pts = container.find_all(class_="p-gamesResult__point")
-            valid = []
-            for n, p in zip(names, pts):
-                name = n.get_text(strip=True)
-                p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
-                if name in PLAYER_TO_OWNER and p_val:
-                    valid.append({"name": name, "point": float(p_val)})
-            for i in range(0, len(valid), 4):
-                chunk = valid[i:i+4]
-                if len(chunk) < 4: continue
-                m_idx = (i // 4) + 1
-                for p_data in chunk:
-                    history.append({
-                        "date": date_str, "m_label": f"第{m_idx}試合", "match_uid": f"{date_str}_{m_idx}",
-                        "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
-                    })
+            # 各試合のテーブル（第1試合、第2試合）を取得
+            tables = container.find_all(class_="p-gamesResult__table")
+            for m_idx_0, table in enumerate(tables):
+                m_num = m_idx_0 + 1
+                rows = table.find_all("tr")
+                for row in rows:
+                    name_tag = row.find(class_="p-gamesResult__name")
+                    pt_tag = row.find(class_="p-gamesResult__point")
+                    
+                    if name_tag and pt_tag:
+                        name = name_tag.get_text(strip=True)
+                        p_raw = pt_tag.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
+                        p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
+                        
+                        if name in PLAYER_TO_OWNER and p_val:
+                            history.append({
+                                "date": date_str, "m_label": f"第{m_num}試合", "match_uid": f"{date_str}_{m_num}",
+                                "player": name, "point": float(p_val), "owner": PLAYER_TO_OWNER[name]
+                            })
         return pd.DataFrame(history)
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"データ取得中にエラーが発生しました: {e}")
+        return pd.DataFrame()
 
 # --- データの取得実行 ---
 csv_file = f"history_{selected_season}.csv"
@@ -215,18 +221,11 @@ else:
 # 5. 管理機能 (サイドバー)
 # ==========================================
 with st.sidebar:
-    # --- 保存し忘れ防止アラート ---
     if (not os.path.exists(csv_file)) and (today_str > SEASON_END):
-        st.error(f"""
-        ### 🚨 保存の警告
-        {selected_season} シーズンの終了予定日（{SEASON_END}）を過ぎていますが、まだデータがCSVとして保存されていません。
-        
-        下のボタンから**至急保存**してください。
-        """)
+        st.error(f"### 🚨 保存の警告\n{selected_season} の終了日を過ぎていますがCSV未保存です。至急保存してください。")
         st.markdown("---")
 
     st.subheader("⚙️ データ管理")
-    
     if st.button('🔄 最新データに更新'):
         st.cache_data.clear()
         st.rerun()
@@ -235,7 +234,6 @@ with st.sidebar:
         st.success(f"✅ {selected_season} の保存済みデータ(CSV)を表示中")
     elif not df_history.empty:
         st.warning(f"🌐 公式サイトの最新データを表示中")
-        
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
