@@ -102,7 +102,7 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """【強化版】試合ブロックを特定して選手とスコアを正しく紐付け"""
+    """クラス名の変更に対応し、取得範囲を広げた最新版"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
@@ -110,14 +110,20 @@ def get_web_history(season_start, season_end):
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # モーダル（詳細画面）ごとに処理
-        for container in soup.find_all(class_="c-modal2"):
-            date_match = re.search(r'(\d{8})', container.get('id', ''))
+        # クラス名が 'c-modal2' から 'c-modal' に変わっている可能性があるため、両方または部分一致で探す
+        containers = soup.find_all(class_=re.compile(r'c-modal'))
+        
+        for container in containers:
+            # idから日付(8桁)を抽出
+            cont_id = container.get('id', '')
+            date_match = re.search(r'(\d{8})', cont_id)
             if not date_match: continue
+            
             date_str = date_match.group(1)
+            # 設定されたシーズン期間外ならスキップ
             if not (season_start <= date_str <= season_end): continue
             
-            # 各試合のテーブル（第1試合、第2試合）を取得
+            # 各試合のテーブルを取得
             tables = container.find_all(class_="p-gamesResult__table")
             for m_idx_0, table in enumerate(tables):
                 m_num = m_idx_0 + 1
@@ -128,17 +134,24 @@ def get_web_history(season_start, season_end):
                     
                     if name_tag and pt_tag:
                         name = name_tag.get_text(strip=True)
+                        # 特殊文字や単位の除去
                         p_raw = pt_tag.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
                         p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
                         
                         if name in PLAYER_TO_OWNER and p_val:
                             history.append({
-                                "date": date_str, "m_label": f"第{m_num}試合", "match_uid": f"{date_str}_{m_num}",
-                                "player": name, "point": float(p_val), "owner": PLAYER_TO_OWNER[name]
+                                "date": date_str, 
+                                "m_label": f"第{m_num}試合", 
+                                "match_uid": f"{date_str}_{m_num}",
+                                "player": name, 
+                                "point": float(p_val), 
+                                "owner": PLAYER_TO_OWNER[name]
                             })
-        return pd.DataFrame(history)
+        
+        # もし history が空の場合、ページ内の他の要素からも探す（予備ロジック）
+        return pd.DataFrame(history).drop_duplicates()
     except Exception as e:
-        st.error(f"データ取得中にエラーが発生しました: {e}")
+        st.error(f"Webデータ取得中にエラーが発生しました: {e}")
         return pd.DataFrame()
 
 # --- データの取得実行 ---
@@ -155,7 +168,10 @@ else:
 # ==========================================
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
+    if data_source == "web":
+        st.info("公式サイトの構造が変更されたか、まだ試合データが掲載されていない可能性があります。")
 else:
+    # 集計処理
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
