@@ -38,9 +38,10 @@ conf = ARCHIVE_CONFIG[selected_season]
 SEASON_START = str(conf["start_date"])
 SEASON_END = str(conf["end_date"])
 TEAM_CONFIG = conf["teams"]
+# 選手名からオーナー名を引く辞書
 PLAYER_TO_OWNER = {p: owner for owner, c in TEAM_CONFIG.items() for p in c['players']}
 
-# 今日の日付
+# 今日の日付（YYYYMMDD）
 today_str = datetime.datetime.now().strftime('%Y%m%d')
 
 # --- スタイル設定 (CSS) ---
@@ -60,6 +61,7 @@ st.title(f"🀄 M-POG {selected_season}")
 # ==========================================
 
 def load_history_from_csv(file_path):
+    """保存済みCSVからデータを読み込む"""
     if not os.path.exists(file_path): return pd.DataFrame()
     try:
         raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
@@ -102,38 +104,47 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
+    """Mリーグ公式サイトから結果をスクレイピングする"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
     try:
         res = requests.get(url, headers=headers)
+        res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 各日程ごとのモーダルをループ
         for container in soup.find_all(class_="c-modal2"):
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
             if not (season_start <= date_str <= season_end): continue
             
-            names = container.find_all(class_="p-gamesResult__name")
-            pts = container.find_all(class_="p-gamesResult__point")
-            valid = []
-            for n, p in zip(names, pts):
-                name = n.get_text(strip=True)
-                p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
-                if name in PLAYER_TO_OWNER and p_val:
-                    valid.append({"name": name, "point": float(p_val)})
-            for i in range(0, len(valid), 4):
-                chunk = valid[i:i+4]
-                if len(chunk) < 4: continue
-                m_idx = (i // 4) + 1
-                for p_data in chunk:
-                    history.append({
-                        "date": date_str, "m_label": f"第{m_idx}試合", "match_uid": f"{date_str}_{m_idx}",
-                        "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
-                    })
+            # --- 修正: 第1回戦、第2回戦の列ごとにデータを取得 ---
+            columns = container.find_all(class_="p-gamesResult__column")
+            for m_idx, col in enumerate(columns, 1):
+                names = col.find_all(class_="p-gamesResult__name")
+                pts = col.find_all(class_="p-gamesResult__point")
+                
+                for n, p in zip(names, pts):
+                    name = n.get_text(strip=True)
+                    # 記号の置換と数値抽出
+                    p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
+                    p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
+                    
+                    if name in PLAYER_TO_OWNER and p_val:
+                        history.append({
+                            "date": date_str, 
+                            "m_label": f"第{m_idx}試合", 
+                            "match_uid": f"{date_str}_{m_idx}",
+                            "player": name, 
+                            "point": float(p_val), 
+                            "owner": PLAYER_TO_OWNER[name]
+                        })
         return pd.DataFrame(history)
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Webデータ取得中にエラーが発生しました: {e}")
+        return pd.DataFrame()
 
 # --- データの取得実行 ---
 csv_file = f"history_{selected_season}.csv"
@@ -150,6 +161,7 @@ else:
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
 else:
+    # 集計処理
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
@@ -161,6 +173,7 @@ else:
     df_teams = pd.DataFrame(pog_summary).sort_values("合計", ascending=False)
     df_players = pd.DataFrame(player_all).sort_values("ポイント", ascending=False)
 
+    # 上段：総合順位と最新結果
     col1, col2 = st.columns([1, 1.2])
     with col1:
         st.markdown('<div class="section-label">🏆 総合順位</div>', unsafe_allow_html=True)
@@ -174,24 +187,29 @@ else:
         latest_date = df_history['date'].max()
         st.markdown(f'<div class="section-label">🀄 最新結果 ({latest_date[4:6]}/{latest_date[6:]})</div>', unsafe_allow_html=True)
         df_latest = df_history[df_history['date'] == latest_date]
-        for m_uid in df_latest['match_uid'].unique():
+        # 試合IDごとにループしてテーブル表示（第1試合、第2試合...）
+        for m_uid in sorted(df_latest['match_uid'].unique()):
             df_m = df_latest[df_latest['match_uid'] == m_uid].sort_values("point", ascending=False)
-            st.write(f"**{df_m['m_label'].iloc[0]}**")
-            html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
-            for row in df_m.itertuples():
-                bg = TEAM_CONFIG[row.owner]['bg_color']
-                html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
-            st.markdown(html + '</table>', unsafe_allow_html=True)
+            if not df_m.empty:
+                st.write(f"**{df_m['m_label'].iloc[0]}**")
+                html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
+                for row in df_m.itertuples():
+                    bg = TEAM_CONFIG[row.owner]['bg_color']
+                    html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
+                st.markdown(html + '</table>', unsafe_allow_html=True)
 
     st.write("---")
+    
+    # ポイント推移グラフ
     st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
     daily = df_history.groupby(['date', 'owner'])['point'].sum().unstack().fillna(0).cumsum().reset_index()
-    daily['date'] = pd.to_datetime(daily['date']).dt.strftime('%m/%d')
-    df_plot = daily.melt(id_vars='date', var_name='オーナー', value_name='累計pt')
-    fig_line = px.line(df_plot, x='date', y='累計pt', color='オーナー', 
-                      color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
+    daily['date_label'] = pd.to_datetime(daily['date']).dt.strftime('%m/%d')
+    df_plot = daily.melt(id_vars=['date', 'date_label'], var_name='オーナー', value_name='累計pt')
+    fig_line = px.line(df_plot, x='date_label', y='累計pt', color='オーナー', 
+                       color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
     st.plotly_chart(fig_line, use_container_width=True)
 
+    # チーム別内訳
     st.markdown('<div class="section-label">📊 チーム別内訳</div>', unsafe_allow_html=True)
     owners_list = list(TEAM_CONFIG.keys())
     for i in range(0, len(owners_list), 2):
@@ -201,9 +219,12 @@ else:
                 name = owners_list[i+j]
                 with cols[j]:
                     df_sub = df_players[df_players["オーナー"] == name].sort_values("ポイント", ascending=True)
-                    fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
+                    fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', 
+                                     color_discrete_sequence=[TEAM_CONFIG[name]['color']], 
+                                     text_auto='.1f', title=f"【{name}】")
                     st.plotly_chart(fig_bar, use_container_width=True)
 
+    # 個人ランキング
     st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
     html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
     for i, row in enumerate(df_players.itertuples(), 1):
@@ -215,13 +236,10 @@ else:
 # 5. 管理機能 (サイドバー)
 # ==========================================
 with st.sidebar:
-    # --- 保存し忘れ防止アラート ---
     if (not os.path.exists(csv_file)) and (today_str > SEASON_END):
         st.error(f"""
         ### 🚨 保存の警告
         {selected_season} シーズンの終了予定日（{SEASON_END}）を過ぎていますが、まだデータがCSVとして保存されていません。
-        
-        下のボタンから**至急保存**してください。
         """)
         st.markdown("---")
 
@@ -236,6 +254,7 @@ with st.sidebar:
     elif not df_history.empty:
         st.warning(f"🌐 公式サイトの最新データを表示中")
         
+        # CSV出力用データの作成
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
