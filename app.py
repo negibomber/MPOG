@@ -26,17 +26,15 @@ if not ARCHIVE_CONFIG:
     st.error("設定ファイル draft_configs.json が見つかりません。")
     st.stop()
 
-# サイドバーで年度を選択
 selected_season = st.sidebar.selectbox("表示するシーズンを選択", list(ARCHIVE_CONFIG.keys()), index=0)
 
-# 選択された年度の設定をセット
 conf = ARCHIVE_CONFIG[selected_season]
 SEASON_START = conf["start_date"]
 SEASON_END = conf["end_date"]
 TEAM_CONFIG = conf["teams"]
 PLAYER_TO_OWNER = {p: owner for owner, c in TEAM_CONFIG.items() for p in c['players']}
 
-# --- スタイル設定 (CSS) ---
+# --- スタイル設定 ---
 st.markdown("""
 <style>
     .pog-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
@@ -53,13 +51,9 @@ st.title(f"🀄 M-POG {selected_season}")
 # ==========================================
 
 def load_history_from_csv(file_path):
-    """エクセル形式のCSVを解析する"""
-    if not os.path.exists(file_path):
-        return pd.DataFrame()
-    try:
-        raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
-    except:
-        raw_df = pd.read_csv(file_path, header=None, encoding='utf-8')
+    if not os.path.exists(file_path): return pd.DataFrame()
+    try: raw_df = pd.read_csv(file_path, header=None, encoding='cp932')
+    except: raw_df = pd.read_csv(file_path, header=None, encoding='utf-8')
     
     dates_row = raw_df.iloc[0].tolist()
     match_nums = raw_df.iloc[1].tolist()
@@ -67,13 +61,11 @@ def load_history_from_csv(file_path):
     
     for i in range(2, len(raw_df)):
         player_name = str(raw_df.iloc[i, 0]).strip()
-        if not player_name or player_name == "nan" or player_name not in PLAYER_TO_OWNER:
-            continue
+        if not player_name or player_name == "nan" or player_name not in PLAYER_TO_OWNER: continue
         for col in range(1, len(raw_df.columns)):
             val = raw_df.iloc[i, col]
             if pd.isna(val) or str(val).strip() == "": continue
-            try:
-                score = float(str(val).replace(' ', ''))
+            try: score = float(str(val).replace(' ', ''))
             except: continue
             d_val = dates_row[col]
             if pd.isna(d_val) or str(d_val).strip() in ["", "nan"]:
@@ -86,9 +78,7 @@ def load_history_from_csv(file_path):
                 dt = pd.to_datetime(d_val)
                 date_str = dt.strftime('%Y%m%d')
             except: continue
-            try:
-                m_num = int(float(match_nums[col]))
-            except: m_num = 1
+            m_num = int(float(match_nums[col])) if pd.notna(match_nums[col]) else 1
             history.append({
                 "date": date_str, "m_label": f"第{m_num}試合", "match_uid": f"{date_str}_{m_num}",
                 "player": player_name, "point": score, "owner": PLAYER_TO_OWNER[player_name]
@@ -97,38 +87,55 @@ def load_history_from_csv(file_path):
 
 @st.cache_data(ttl=1800)
 def get_web_history(season_start, season_end):
-    """公式サイトからスクレイピング"""
+    """【修正点】1つのモーダル内にある『複数の試合テーブル』を個別に処理する"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
     try:
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
-        for container in soup.find_all(class_="c-modal2"):
+        
+        # モーダル（試合詳細）を探す。クラス名は c-modal で始まるものを広域に探す
+        modals = soup.find_all(class_=re.compile(r'c-modal'))
+        for container in modals:
             date_match = re.search(r'(\d{8})', container.get('id', ''))
             if not date_match: continue
             date_str = date_match.group(1)
             if not (season_start <= date_str <= season_end): continue
-            names = container.find_all(class_="p-gamesResult__name")
-            pts = container.find_all(class_="p-gamesResult__point")
-            valid = []
-            for n, p in zip(names, pts):
-                name = n.get_text(strip=True)
-                p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
-                p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
-                if name in PLAYER_TO_OWNER and p_val:
-                    valid.append({"name": name, "point": float(p_val)})
-            for i in range(0, len(valid), 4):
-                chunk = valid[i:i+4]
-                if len(chunk) < 4: continue
-                m_idx = (i // 4) + 1
-                for p_data in chunk:
-                    history.append({
-                        "date": date_str, "m_label": f"第{m_idx}試合", "match_uid": f"{date_str}_{m_idx}",
-                        "player": p_data["name"], "point": p_data["point"], "owner": PLAYER_TO_OWNER[p_data["name"]]
-                    })
+            
+            # 重要：1試合（4人1組）ごとのテーブルを個別に取得する
+            # クラス名に依存しすぎず、HTMLのtable構造から「4人ずつ」を切り出す
+            game_tables = container.find_all("table")
+            
+            valid_match_idx = 0
+            for table in game_tables:
+                names = table.find_all(class_=re.compile(r'name'))
+                pts = table.find_all(class_=re.compile(r'point'))
+                
+                # そのテーブル内に4人分のデータがあるか確認
+                temp_match = []
+                for n, p in zip(names, pts):
+                    name = n.get_text(strip=True)
+                    p_raw = p.get_text(strip=True).replace('▲', '-').replace('pts', '').replace(' ', '')
+                    p_val = "".join(re.findall(r'[0-9.\-]', p_raw))
+                    if name in PLAYER_TO_OWNER and p_val:
+                        temp_match.append({"name": name, "point": float(p_val)})
+                
+                # 4人揃ったテーブルのみ「1試合」として確定させる
+                if len(temp_match) == 4:
+                    valid_match_idx += 1
+                    for p_data in temp_match:
+                        history.append({
+                            "date": date_str, 
+                            "m_label": f"第{valid_match_idx}試合", 
+                            "match_uid": f"{date_str}_{valid_match_idx}",
+                            "player": p_data["name"], 
+                            "point": p_data["point"], 
+                            "owner": PLAYER_TO_OWNER[p_data["name"]]
+                        })
         return pd.DataFrame(history)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 # --- データの取得実行 ---
 csv_file = f"history_{selected_season}.csv"
@@ -143,7 +150,6 @@ else:
 if df_history.empty:
     st.warning(f"{selected_season} のデータが見つかりません。")
 else:
-    # --- 集計 ---
     total_pts = df_history.groupby('player')['point'].sum()
     pog_summary, player_all = [], []
     for owner, cfg in TEAM_CONFIG.items():
@@ -168,7 +174,8 @@ else:
         latest_date = df_history['date'].max()
         st.markdown(f'<div class="section-label">🀄 最新結果 ({latest_date[4:6]}/{latest_date[6:]})</div>', unsafe_allow_html=True)
         df_latest = df_history[df_history['date'] == latest_date]
-        for m_uid in df_latest['match_uid'].unique():
+        # match_uid（日付＋試合番号）ごとに分けて表示
+        for m_uid in sorted(df_latest['match_uid'].unique()):
             df_m = df_latest[df_latest['match_uid'] == m_uid].sort_values("point", ascending=False)
             st.write(f"**{df_m['m_label'].iloc[0]}**")
             html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
@@ -198,42 +205,22 @@ else:
                     fig_bar = px.bar(df_sub, y="選手", x="ポイント", orientation='h', color_discrete_sequence=[TEAM_CONFIG[name]['color']], text_auto='.1f', title=f"【{name}】")
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-    st.markdown('<div class="section-label">👤 個人ランキング</div>', unsafe_allow_html=True)
-    html = '<table class="pog-table"><tr><th>Rank</th><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
-    for i, row in enumerate(df_players.itertuples(), 1):
-        bg = TEAM_CONFIG[row.オーナー]['bg_color']
-        html += f'<tr style="background-color:{bg}"><td>{i}</td><td>{row.選手}</td><td>{row.オーナー}</td><td>{row.ポイント:+.1f}</td></tr>'
-    st.markdown(html + '</table>', unsafe_allow_html=True)
-
-# --- 5. 管理機能（サイドバー） ---
+# --- 5. 管理機能 ---
 with st.sidebar:
     st.markdown("---")
-    st.subheader("データ管理")
     if st.button('🔄 データを更新'):
         st.cache_data.clear()
         st.rerun()
-
-    # CSVが未作成で、Webから取得したデータがある場合のみダウンロードボタンを表示
-    if not os.path.exists(csv_file) and not df_history.empty:
-        st.info("現在のWebデータをエクセル形式のCSVで保存できます。")
+    if not df_history.empty:
+        st.info("WebデータをCSVで保存できます。")
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
         dates_row = [""] + [pd.to_datetime(c[0]).strftime('%Y/%m/%d') for c in pivot_df.columns]
         match_row = [""] + [str(c[1]).replace("第", "").replace("試合", "") for c in pivot_df.columns]
-        
-        output_csv = ",".join(dates_row) + "\n"
-        output_csv += ",".join(match_row) + "\n"
-        
-        all_players_in_season = sorted(list(PLAYER_TO_OWNER.keys()))
-        for p in all_players_in_season:
+        output_csv = ",".join(dates_row) + "\n" + ",".join(match_row) + "\n"
+        for p in sorted(list(PLAYER_TO_OWNER.keys())):
             row_vals = [p]
             for col in pivot_df.columns:
                 val = pivot_df.loc[p, col] if p in pivot_df.index else ""
                 row_vals.append(str(val) if pd.notna(val) else "")
             output_csv += ",".join(row_vals) + "\n"
-        
-        st.download_button(
-            label="💾 現在のデータをCSVで保存",
-            data=output_csv.encode('cp932'),
-            file_name=f"history_{selected_season}.csv",
-            mime="text/csv",
-        )
+        st.download_button(label="💾 現在のデータをCSVで保存", data=output_csv.encode('cp932'), file_name=f"history_{selected_season}.csv", mime="text/csv")
