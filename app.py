@@ -168,14 +168,17 @@ else:
         latest_date = df_history['date'].max()
         st.markdown(f'<div class="section-label">🀄 最新結果 ({latest_date[4:6]}/{latest_date[6:]})</div>', unsafe_allow_html=True)
         df_latest = df_history[df_history['date'] == latest_date]
-        for m_uid in df_latest['match_uid'].unique():
+        
+        # 修正箇所：試合(match_uid)ごとにループし、4人ずつ個別の表にする
+        for m_uid in sorted(df_latest['match_uid'].unique()):
             df_m = df_latest[df_latest['match_uid'] == m_uid].sort_values("point", ascending=False)
             st.write(f"**{df_m['m_label'].iloc[0]}**")
             html = '<table class="pog-table"><tr><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
             for row in df_m.itertuples():
                 bg = TEAM_CONFIG[row.owner]['bg_color']
                 html += f'<tr style="background-color:{bg}"><td>{row.player}</td><td>{row.owner}</td><td>{row.point:+.1f}</td></tr>'
-            st.markdown(html + '</table>', unsafe_allow_html=True)
+            html += '</table>'
+            st.markdown(html, unsafe_allow_html=True)
 
     st.write("---")
     st.markdown('<div class="section-label">📈 ポイント推移グラフ</div>', unsafe_allow_html=True)
@@ -213,7 +216,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # CSVが未作成で、Webから取得したデータがある場合のみダウンロードボタンを表示
     if not os.path.exists(csv_file) and not df_history.empty:
         st.info("現在のWebデータをエクセル形式のCSVで保存できます。")
         pivot_df = df_history.pivot(index='player', columns=['date', 'm_label'], values='point')
