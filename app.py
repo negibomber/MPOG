@@ -123,7 +123,7 @@ def get_master_data():
                         d_str = pd.to_datetime(d_val).strftime('%Y%m%d')
                         m_num = int(float(str(nums[col])))
                         all_rows.append({
-                            "season": s_name, "date": d_str, "match_uid": f"{d_str}_{m_num}", 
+                            "season": s_name, "date": d_str, "match_uid": f"{date_str}_{m_num}", 
                             "m_label": f"第{m_num}試合", "player": p_name, "point": score, 
                             "owner": ALL_PLAYER_TO_OWNER.get(p_name, "不明")
                         })
@@ -195,7 +195,6 @@ with tab1:
                 for uid in sorted(df_l['match_uid'].unique()):
                     df_m = df_l[df_l['match_uid'] == uid].sort_values("point", ascending=False)
                     st.write(f"**{df_m['m_label'].iloc[0]}**")
-                    # 修正：ヘッダー行を追加
                     html = '<table width="100%" style="border-collapse:collapse; font-size:0.85rem;">'
                     html += '<tr style="background:#666; color:white;"><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
                     for row in df_m.itertuples():
@@ -219,31 +218,50 @@ def get_stats_df(df, group_key):
     for r in range(1, 5):
         counts = df[df['rank']==r].groupby(group_key)['rank'].count().reindex(stats[group_key], fill_value=0).values
         stats[f'{r}着'] = counts
-        pcts = (counts / stats['試合数'] * 100).round(1).astype(str)
-        stats[f'{r}着'] = stats[f'{r}着'].astype(str) + " (" + pcts + "%)"
+        # 数値のまま保持し、表示は column_config で制御
+        stats[f'{r}着(%)'] = (counts / stats['試合数'] * 100).round(1)
     
     stats['平均pt'] = (stats['通算pt'] / stats['試合数']).round(2)
-    return stats[[group_key, '通算pt', '試合数', '平均pt', '1着', '2着', '3着', '4着']].sort_values('通算pt', ascending=False)
+    cols = [group_key, '通算pt', '試合数', '平均pt', '1着', '1着(%)', '2着', '2着(%)', '3着', '3着(%)', '4着', '4着(%)']
+    return stats[cols].sort_values('通算pt', ascending=False)
+
+# 数値ソート用カラム設定
+# format="%.1f%%" のように %% と重ねることで % 表示を安全に行います
+COL_CONFIG = {
+    "通算pt": st.column_config.NumberColumn("通算pt", format="%.1f"),
+    "平均pt": st.column_config.NumberColumn("平均pt", format="%.2f"),
+    "1着": st.column_config.NumberColumn("1着"),
+    "1着(%)": st.column_config.NumberColumn("1着率", format="%.1f%%"),
+    "2着": st.column_config.NumberColumn("2着"),
+    "2着(%)": st.column_config.NumberColumn("2着率", format="%.1f%%"),
+    "3着": st.column_config.NumberColumn("3着"),
+    "3着(%)": st.column_config.NumberColumn("3着率", format="%.1f%%"),
+    "4着": st.column_config.NumberColumn("4着"),
+    "4着(%)": st.column_config.NumberColumn("4着率", format="%.1f%%"),
+}
 
 with tab2:
     st.markdown('<div class="section-label">🏅 オーナー別通算成績</div>', unsafe_allow_html=True)
     if not df_master.empty:
-        df_owner = get_stats_df(df_master, 'owner')
-        def style_owner(row):
+        df_owner = get_stats_df(df_master, 'owner').set_index('owner')
+        def style_full_row(row):
             color = OWNER_COLOR_MAP.get(row.name, "#ffffff")
             return [f'background-color: {color}; color: black; font-weight: bold'] * len(row)
         
-        # エラー回避のため height を完全に省略し、ソート機能を優先
+        # 全列（割合列も含む）に背景色を適用
         st.dataframe(
-            df_owner.set_index('owner').style.apply(style_owner, axis=1).format({'通算pt': '{:+.1f}', '平均pt': '{:+.2f}'}),
-            use_container_width=True
+            df_owner.style.apply(style_full_row, axis=1),
+            use_container_width=True,
+            column_config=COL_CONFIG
         )
 
 with tab3:
     st.markdown('<div class="section-label">👤 選手別通算成績</div>', unsafe_allow_html=True)
     if not df_master.empty:
-        df_player = get_stats_df(df_master, 'player')
+        df_player = get_stats_df(df_master, 'player').set_index('player')
+        # 選手別は色なし
         st.dataframe(
-            df_player.set_index('player').style.format({'通算pt': '{:+.1f}', '平均pt': '{:+.2f}'}),
-            use_container_width=True
+            df_player,
+            use_container_width=True,
+            column_config=COL_CONFIG
         )
