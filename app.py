@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import json
@@ -29,7 +28,7 @@ ARCHIVE_CONFIG = load_config()
 
 # シーズンごとの選手所属を管理するネストした辞書を作成
 SEASON_PLAYER_MAP = {}
-OWNER_COLOR_MAP = {} # 全期間の色設定
+OWNER_COLOR_MAP = {} 
 if ARCHIVE_CONFIG:
     for s_name, s_data in ARCHIVE_CONFIG.items():
         SEASON_PLAYER_MAP[s_name] = {}
@@ -49,10 +48,26 @@ SEASON_START = str(conf.get("start_date", "20000101"))
 SEASON_END = str(conf.get("end_date", "20991231"))
 TEAM_CONFIG = conf.get("teams", {})
 
-# スタイル設定
+# --- スタイル設定 (コントラストを最適化) ---
 st.markdown("""
 <style>
     .section-label { font-weight: bold; margin: 25px 0 10px 0; font-size: 1.3rem; border-left: 8px solid #444; padding-left: 12px; color: #333; }
+    
+    /* 1. 自作HTMLテーブルの「データ行(td)」だけを黒文字に固定 (明るい背景用) */
+    .pog-table td {
+        color: black !important;
+    }
+    /* 2. 自作HTMLテーブルの「ヘッダー(th)」は白文字を維持 (暗い背景用) */
+    .pog-table th {
+        color: white !important;
+    }
+
+    /* 3. Streamlitの st.dataframe 内の「データセル」だけを黒文字に固定 */
+    [data-testid="stTable"] td, 
+    [data-testid="stDataFrame"] div[data-testid="stTable"] td {
+        color: black !important;
+    }
+    /* 4. Streamlitの st.dataframe の「ヘッダー」はシステムの自動判定に任せる(黒のままならOK) */
 </style>
 """, unsafe_allow_html=True)
 
@@ -170,7 +185,6 @@ with st.sidebar:
 # ==========================================
 # 5. メインタブ表示
 # ==========================================
-# タブの定義を1つ追加 (tab4を追加)
 tab1, tab2, tab3, tab4 = st.tabs(["📊 今期成績", "🏆 オーナー通算", "👤 選手通算", "🤝 相性ランキング"])
 
 with tab1:
@@ -190,7 +204,7 @@ with tab1:
                     s = sum(pts_cur.get(p, 0) for p in c.get('players', []))
                     summary.append({"オーナー": o, "合計": s})
                 df_s = pd.DataFrame(summary).sort_values("合計", ascending=False)
-                html = '<table width="100%" style="border-collapse:collapse; font-size:0.9rem;">'
+                html = '<table class="pog-table" width="100%" style="border-collapse:collapse; font-size:0.9rem;">'
                 html += '<tr style="background:#444; color:white;"><th>順位</th><th>オーナー</th><th>合計</th></tr>'
                 for i, r in enumerate(df_s.itertuples(), 1):
                     bg = TEAM_CONFIG.get(r.オーナー, {}).get('bg_color', '#fff')
@@ -204,7 +218,7 @@ with tab1:
                 for uid in sorted(df_l['match_uid'].unique()):
                     df_m = df_l[df_l['match_uid'] == uid].sort_values("point", ascending=False)
                     st.write(f"**{df_m['m_label'].iloc[0]}**")
-                    html = '<table width="100%" style="border-collapse:collapse; font-size:0.85rem;">'
+                    html = '<table class="pog-table" width="100%" style="border-collapse:collapse; font-size:0.85rem;">'
                     html += '<tr style="background:#666; color:white;"><th>選手</th><th>オーナー</th><th>ポイント</th></tr>'
                     for row in df_m.itertuples():
                         bg = TEAM_CONFIG.get(row.owner, {'bg_color':'#eee'})['bg_color']
@@ -221,7 +235,6 @@ with tab1:
                             color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
             st.plotly_chart(fig, use_container_width=True)
 
-# 既存の集計関数 (一切変更なし)
 def get_stats_df(df, group_key):
     stats = df.groupby(group_key).agg(通算pt=('point','sum'), 試合数=('point','count')).reset_index()
     for r in range(1, 5):
@@ -231,7 +244,6 @@ def get_stats_df(df, group_key):
     stats['平均pt'] = (stats['通算pt'] / stats['試合数']).round(2)
     return stats.sort_values('通算pt', ascending=False)
 
-# ペア集計専用の関数 (新設: 既存ロジックに影響を与えない)
 def get_pairing_stats(df):
     group_keys = ['owner', 'player']
     stats = df.groupby(group_keys).agg(通算pt=('point','sum'), 試合数=('point','count')).reset_index()
@@ -242,7 +254,6 @@ def get_pairing_stats(df):
     stats['平均pt'] = (stats['通算pt'] / stats['試合数']).round(2)
     return stats.sort_values('通算pt', ascending=False)
 
-# 既存のカラム設定 (一切変更なし)
 STATS_COL_CONF = {
     "通算pt": st.column_config.NumberColumn("通算pt", format="%.1f"),
     "平均pt": st.column_config.NumberColumn("平均pt", format="%.2f"),
@@ -275,20 +286,14 @@ with tab3:
             column_config=STATS_COL_CONF
         )
 
-# 新機能: 相性ランキングタブ (新設: 既存タブに影響を与えない)
 with tab4:
     st.markdown('<div class="section-label">🤝 オーナー×選手 相性ランキング (全期間)</div>', unsafe_allow_html=True)
     if not df_master.empty:
-        # df_masterを読み取るだけで、加工は別の変数 df_pairing で行う
         df_pairing = get_pairing_stats(df_master)
-        
-        # オーナー色で行全体を塗る処理（ペア表示用）
         def style_pairing(row):
-            # owner列の値を取得（indexではなくデータ列にある）
             owner_val = row['owner']
             color = OWNER_COLOR_MAP.get(owner_val, "#ffffff")
             return [f'background-color: {color}; color: black; font-weight: bold'] * len(row)
-        
         st.dataframe(
             df_pairing.style.apply(style_pairing, axis=1),
             use_container_width=True,
