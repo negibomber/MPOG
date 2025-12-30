@@ -62,6 +62,7 @@ st.title(f"🀄 M-POG Archives & Stats")
 
 @st.cache_data(ttl=1800)
 def fetch_web_history(s_start, s_end, s_name):
+    """Webから現在のシーズンのデータを取得"""
     url = "https://m-league.jp/games/"
     headers = {"User-Agent": "Mozilla/5.0"}
     history = []
@@ -98,40 +99,60 @@ def fetch_web_history(s_start, s_end, s_name):
     except: return pd.DataFrame()
 
 def get_master_data():
+    """過去の全CSVファイルを解析ロジックに基づき読み込み、Webデータと合算"""
     all_rows = []
     csv_files = [f for f in os.listdir('.') if f.startswith('history_') and f.endswith('.csv')]
+    
     for f_path in csv_files:
         try:
-            try: df = pd.read_csv(f_path, header=None, encoding='cp932')
-            except: df = pd.read_csv(f_path, header=None, encoding='utf-8')
-            if len(df) < 3: continue
-            dates, nums = df.iloc[0].tolist(), df.iloc[1].tolist()
+            # エンコーディング対応
+            try: df_raw = pd.read_csv(f_path, header=None, encoding='cp932')
+            except: df_raw = pd.read_csv(f_path, header=None, encoding='utf-8')
+            
+            if len(df_raw) < 3: continue
+            
+            # 1行目: 日付, 2行目: 試合番号
+            dates, nums = df_raw.iloc[0].tolist(), df_raw.iloc[1].tolist()
             s_name = f_path.replace("history_","").replace(".csv","")
-            for i in range(2, len(df)):
-                p_name = str(df.iloc[i, 0]).strip()
+            
+            # 3行目以降が各選手のデータ
+            for i in range(2, len(df_raw)):
+                p_name = str(df_raw.iloc[i, 0]).strip()
                 if not p_name or p_name == "nan": continue
-                for col in range(1, len(df.columns)):
-                    val = df.iloc[i, col]
+                
+                for col in range(1, len(df_raw.columns)):
+                    val = df_raw.iloc[i, col]
                     if pd.isna(val) or str(val).strip() == "": continue
+                    
                     try:
                         score = float(str(val).replace('▲', '-').replace(' ', ''))
                         d_val = dates[col]
+                        
+                        # 日付が空の場合は左（前のセル）を探す
                         if pd.isna(d_val) or str(d_val) == "":
                             for b in range(col, 0, -1):
                                 if not pd.isna(dates[b]) and str(dates[b]) != "":
                                     d_val = dates[b]; break
+                        
                         d_str = pd.to_datetime(d_val).strftime('%Y%m%d')
                         m_num = int(float(str(nums[col])))
+                        
                         all_rows.append({
-                            "season": s_name, "date": d_str, "match_uid": f"{date_str}_{m_num}", 
+                            "season": s_name, "date": d_str, "match_uid": f"{d_str}_{m_num}", 
                             "m_label": f"第{m_num}試合", "player": p_name, "point": score, 
                             "owner": ALL_PLAYER_TO_OWNER.get(p_name, "不明")
                         })
                     except: continue
         except: continue
+
+    # Webから最新分（選択シーズン分）を取得
     df_web = fetch_web_history(SEASON_START, SEASON_END, selected_season)
+    
+    # 結合して重複（CSVとWebの重複など）を削除
     df_all = pd.concat([pd.DataFrame(all_rows), df_web]).drop_duplicates(subset=['match_uid', 'player']) if all_rows or not df_web.empty else pd.DataFrame()
+    
     if not df_all.empty:
+        # 全データに対して改めて順位を計算（通算成績用）
         df_all['rank'] = df_all.groupby('match_uid')['point'].rank(ascending=False, method='min').fillna(4).astype(int)
     return df_all
 
@@ -143,21 +164,34 @@ df_master = get_master_data()
 with st.sidebar:
     st.divider()
     st.markdown("### 🛠 データ管理")
-    df_cur_season = df_master[df_master['season'] == selected_season] if not df_master.empty else pd.DataFrame()
-    if not df_cur_season.empty:
-        output = io.BytesIO()
-        df_cur_season.to_csv(output, index=False, encoding='cp932')
+    if not df_master.empty:
+        # 1. 選択シーズンのみのCSV保存
+        df_cur_season = df_master[df_master['season'] == selected_season]
+        if not df_cur_season.empty:
+            output = io.BytesIO()
+            df_cur_season.to_csv(output, index=False, encoding='cp932')
+            st.download_button(
+                label=f"📥 {selected_season} のCSVを保存",
+                data=output.getvalue(),
+                file_name=f"history_{selected_season}.csv",
+                mime="text/csv"
+            )
+        
+        # 2. 全期間（通算）のCSV保存
+        all_output = io.BytesIO()
+        df_master.to_csv(all_output, index=False, encoding='cp932')
         st.download_button(
-            label=f"📥 {selected_season} のCSVを保存",
-            data=output.getvalue(),
-            file_name=f"history_{selected_season}.csv",
+            label="📥 全期間(通算)CSVを保存",
+            data=all_output.getvalue(),
+            file_name="history_all_master.csv",
             mime="text/csv"
         )
+
     if st.button('🔄 データを最新に更新'):
         st.cache_data.clear()
         st.rerun()
     st.divider()
-    st.caption("Data Source: M-League Official / Archives")
+    st.caption(f"Loaded: {len(df_master)} records")
 
 # ==========================================
 # 5. メインタブ表示
@@ -212,56 +246,43 @@ with tab1:
                            color_discrete_map={k: v['color'] for k, v in TEAM_CONFIG.items()}, markers=True)
             st.plotly_chart(fig, use_container_width=True)
 
-# 通算成績データ作成
+# 通算成績計算
 def get_stats_df(df, group_key):
+    # 合計とカウント
     stats = df.groupby(group_key).agg(通算pt=('point','sum'), 試合数=('point','count')).reset_index()
+    # 順位別カウント（1〜4着）
     for r in range(1, 5):
         counts = df[df['rank']==r].groupby(group_key)['rank'].count().reindex(stats[group_key], fill_value=0).values
         stats[f'{r}着'] = counts
-        # 数値のまま保持し、表示は column_config で制御
-        stats[f'{r}着(%)'] = (counts / stats['試合数'] * 100).round(1)
+        pcts = (counts / stats['試合数'] * 100).round(1).astype(str)
+        stats[f'{r}着'] = stats[f'{r}着'].astype(str) + " (" + pcts + "%)"
     
     stats['平均pt'] = (stats['通算pt'] / stats['試合数']).round(2)
-    cols = [group_key, '通算pt', '試合数', '平均pt', '1着', '1着(%)', '2着', '2着(%)', '3着', '3着(%)', '4着', '4着(%)']
-    return stats[cols].sort_values('通算pt', ascending=False)
+    return stats[[group_key, '通算pt', '試合数', '平均pt', '1着', '2着', '3着', '4着']].sort_values('通算pt', ascending=False)
 
-# 数値ソート用カラム設定
-# format="%.1f%%" のように %% と重ねることで % 表示を安全に行います
-COL_CONFIG = {
-    "通算pt": st.column_config.NumberColumn("通算pt", format="%.1f"),
-    "平均pt": st.column_config.NumberColumn("平均pt", format="%.2f"),
-    "1着": st.column_config.NumberColumn("1着"),
-    "1着(%)": st.column_config.NumberColumn("1着率", format="%.1f%%"),
-    "2着": st.column_config.NumberColumn("2着"),
-    "2着(%)": st.column_config.NumberColumn("2着率", format="%.1f%%"),
-    "3着": st.column_config.NumberColumn("3着"),
-    "3着(%)": st.column_config.NumberColumn("3着率", format="%.1f%%"),
-    "4着": st.column_config.NumberColumn("4着"),
-    "4着(%)": st.column_config.NumberColumn("4着率", format="%.1f%%"),
-}
+# 数値列の書式設定
+COL_FORMAT = {'通算pt': '{:+.1f}', '平均pt': '{:+.2f}'}
 
 with tab2:
-    st.markdown('<div class="section-label">🏅 オーナー別通算成績</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">🏅 オーナー別通算成績 (全期間)</div>', unsafe_allow_html=True)
     if not df_master.empty:
-        df_owner = get_stats_df(df_master, 'owner').set_index('owner')
-        def style_full_row(row):
+        # 不明オーナーを除外して集計
+        df_owner = get_stats_df(df_master[df_master['owner'] != "不明"], 'owner')
+        def style_owner(row):
             color = OWNER_COLOR_MAP.get(row.name, "#ffffff")
             return [f'background-color: {color}; color: black; font-weight: bold'] * len(row)
         
-        # 全列（割合列も含む）に背景色を適用
         st.dataframe(
-            df_owner.style.apply(style_full_row, axis=1),
-            use_container_width=True,
-            column_config=COL_CONFIG
+            df_owner.set_index('owner').style.apply(style_owner, axis=1).format(COL_FORMAT),
+            use_container_width=True
         )
 
 with tab3:
-    st.markdown('<div class="section-label">👤 選手別通算成績</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">👤 選手別通算成績 (全期間)</div>', unsafe_allow_html=True)
     if not df_master.empty:
-        df_player = get_stats_df(df_master, 'player').set_index('player')
-        # 選手別は色なし
+        df_player = get_stats_df(df_master, 'player')
         st.dataframe(
-            df_player,
-            use_container_width=True,
-            column_config=COL_CONFIG
+            df_player.set_index('player').style.format(COL_FORMAT),
+            use_container_width=True
         )
+
